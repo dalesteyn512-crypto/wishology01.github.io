@@ -1,0 +1,679 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Wishology — 4D Creative Studio</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Dancing+Script:wght@700&family=Quicksand:wght@500;600;700&display=swap" rel="stylesheet">
+  <style>
+    body { font-family: 'Quicksand', sans-serif; background: #ffe4ec; color: #5c1626; }
+    .font-brand { font-family: 'Dancing Script', cursive; }
+    .wish-card { background: #fff2f6; border: 1.5px solid #f4a5be; box-shadow: 0 10px 28px rgba(214,92,134,.16); }
+    canvas.three-stage { display: block; width: 100%; height: 100%; touch-action: none; cursor: grab; }
+  </style>
+</head>
+<body class="min-h-screen">
+  <div id="app"></div>
+
+  <script>
+    const esc = (s="") => String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;");
+    const uid = (p="id") => p + "_" + Math.random().toString(36).slice(2,8);
+    const clone = (o) => JSON.parse(JSON.stringify(o));
+
+    const svgSample = (lbl, c1, c2) => "data:image/svg+xml;utf8," + encodeURIComponent(
+      `<svg xmlns="http://www.w3.org/2000/svg" width="420" height="300"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="${c1}"/><stop offset="100%" stop-color="${c2}"/></linearGradient></defs><rect width="420" height="300" fill="url(#g)"/><circle cx="210" cy="115" r="46" fill="rgba(255,255,255,0.25)"/><text x="210" y="215" text-anchor="middle" fill="#fff" font-family="sans-serif" font-size="22" font-weight="bold">${lbl}</text></svg>`
+    );
+
+    const SAMPLES = [
+      { id:"sp1", url:svgSample("Memory Photo 1","#f06292","#ba68c8"), caption:"A smile worth celebrating" },
+      { id:"sp2", url:svgSample("Memory Photo 2","#ec407a","#ffb74d"), caption:"Moments we treasure forever" },
+      { id:"sp3", url:svgSample("Memory Photo 3","#ab47bc","#4fc3f7"), caption:"Pure joy together" },
+      { id:"sp4", url:svgSample("Memory Photo 4","#e57373","#f06292"), caption:"Forever in our hearts" }
+    ];
+
+    const fx4D = {
+      timer: null, ctx: null,
+      ensure() {
+        if (!this.ctx) this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+        if (this.ctx.state === "suspended") this.ctx.resume().catch(()=>{});
+        return this.ctx;
+      },
+      playMusic() {
+        this.stopMusic();
+        try {
+          const ctx = this.ensure(), n = [523.25,659.25,783.99,659.25,587.33,698.46,880,698.46]; let k = 0;
+          const t = () => {
+            if (!this.ctx) return;
+            const o = ctx.createOscillator(), g = ctx.createGain();
+            o.type = "sine"; o.frequency.value = n[k++ % n.length];
+            g.gain.setValueAtTime(0.045, ctx.currentTime);
+            g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.55);
+            o.connect(g); g.connect(ctx.destination); o.start(); o.stop(ctx.currentTime + 0.6);
+          };
+          t(); this.timer = setInterval(t, 650);
+        } catch(e){}
+      },
+      chime() {
+        try { if (navigator.vibrate) navigator.vibrate([35,30,70]); } catch(e){}
+        try {
+          const ctx = this.ensure();
+          [659.25,783.99,1046.5,1318.5].forEach((f,i) => {
+            const o = ctx.createOscillator(), g = ctx.createGain(), t0 = ctx.currentTime + i*0.065;
+            o.type = "triangle"; o.frequency.value = f;
+            g.gain.setValueAtTime(0.08, t0); g.gain.exponentialRampToValueAtTime(0.001, t0 + 0.35);
+            o.connect(g); g.connect(ctx.destination); o.start(t0); o.stop(t0 + 0.38);
+          });
+        } catch(e){}
+      },
+      stopMusic() { if (this.timer) { clearInterval(this.timer); this.timer = null; } }
+    };
+
+    class Wish4DEngine {
+      constructor() {
+        this.renderer = null; this.scene = null; this.camera = null; this.raf = null; this.clock = null;
+        this.group = null; this.particles = null; this.halo = null;
+        this.mode = "sprinkles_3d"; this.triggered = false; this.time = 0; this.burst = 0;
+        this.refs = {}; this.rotY = 0; this.targetRotY = 0; this.dragging = false; this.lastX = 0;
+      }
+      sparkTex() {
+        const c = document.createElement("canvas"); c.width = 64; c.height = 64;
+        const ctx = c.getContext("2d"), g = ctx.createRadialGradient(32,32,1,32,32,30);
+        g.addColorStop(0,"#fff"); g.addColorStop(0.35,"rgba(255,215,235,.95)"); g.addColorStop(1,"rgba(255,255,255,0)");
+        ctx.fillStyle = g; ctx.fillRect(0,0,64,64); return new THREE.CanvasTexture(c);
+      }
+      heartShape(s=1) {
+        const sh = new THREE.Shape();
+        sh.moveTo(0, 0.35*s);
+        sh.bezierCurveTo(0,0.78*s,-0.62*s,0.78*s,-0.62*s,0.25*s);
+        sh.bezierCurveTo(-0.62*s,-0.22*s,0,-0.52*s,0,-0.82*s);
+        sh.bezierCurveTo(0,-0.52*s,0.62*s,-0.22*s,0.62*s,0.25*s);
+        sh.bezierCurveTo(0.62*s,0.78*s,0,0.78*s,0,0.35*s);
+        return sh;
+      }
+      mount(container, mode, triggered, photos=[]) {
+        if (!container) return;
+        if (typeof THREE === "undefined") {
+          container.innerHTML = `<div class="h-full flex items-center justify-center p-4 text-xs font-bold opacity-75">Connect to internet to load 4D animations ✨</div>`;
+          return;
+        }
+        if (!this.clock) this.clock = new THREE.Clock();
+        this.mode = mode || "sprinkles_3d"; this.triggered = !!triggered; this.burst = triggered ? 2.0 : 0.2;
+        if (!this.renderer) {
+          this.renderer = new THREE.WebGLRenderer({ alpha:true, antialias:true });
+          this.renderer.setPixelRatio(Math.min(window.devicePixelRatio||1, 2));
+          this.renderer.domElement.className = "three-stage";
+          this.renderer.domElement.addEventListener("pointerdown", e => { this.dragging=true; this.lastX=e.clientX; });
+          window.addEventListener("pointerup", () => this.dragging=false);
+          window.addEventListener("pointermove", e => { if(this.dragging){ this.targetRotY+=(e.clientX-this.lastX)*0.015; this.lastX=e.clientX; } });
+        }
+        if (this.renderer.domElement.parentNode !== container) { container.innerHTML=""; container.appendChild(this.renderer.domElement); }
+        const w = container.clientWidth||320, h = container.clientHeight||250;
+        this.renderer.setSize(w, h, false);
+        this.scene = new THREE.Scene();
+        this.camera = new THREE.PerspectiveCamera(44, w/h, 0.1, 100);
+        this.camera.position.set(0, 0.65, 5.0);
+        this.scene.add(new THREE.HemisphereLight(0xfff5f8, 0xf8bbd0, 1.0));
+        const kl = new THREE.DirectionalLight(0xfff6e5, 1.2); kl.position.set(3,5,4);
+        const rl = new THREE.PointLight(0xff66a3, 1.4, 16); rl.position.set(-3,2,3);
+        this.scene.add(kl, rl);
+        this.group = new THREE.Group(); this.scene.add(this.group);
+        this.halo = new THREE.Mesh(new THREE.TorusGeometry(1.45,0.025,12,64), new THREE.MeshBasicMaterial({color:0xffd54f,transparent:true,opacity:0.45}));
+        this.halo.rotation.x = Math.PI/2; this.halo.position.y = -0.85; this.scene.add(this.halo);
+        this.refs = {}; this.rotY = 0; this.targetRotY = 0; this.clock.getDelta();
+        this.buildScene(photos);
+        this.buildSprinkles(this.mode === "flower_sprinkles_3d" ? "flowers" : "sprinkles");
+        if (this.raf) cancelAnimationFrame(this.raf);
+        const loop = () => { this.raf = requestAnimationFrame(loop); this.update(Math.min(this.clock.getDelta(), 0.05)); this.renderer.render(this.scene, this.camera); };
+        loop();
+      }
+      buildSprinkles(style) {
+        const count = 320, pos = new Float32Array(count*3), cols = new Float32Array(count*3), vel = [];
+        const pal = style === "flowers"
+          ? [new THREE.Color("#ff80ab"),new THREE.Color("#f48fb1"),new THREE.Color("#fff0f5"),new THREE.Color("#ffd54f")]
+          : [new THREE.Color("#ffd54f"),new THREE.Color("#ff4081"),new THREE.Color("#7dd3fc"),new THREE.Color("#ffffff")];
+        for (let i=0; i<count; i++) {
+          pos[i*3]=(Math.random()-0.5)*8; pos[i*3+1]=(Math.random()-0.5)*6; pos[i*3+2]=(Math.random()-0.5)*5.5;
+          const c = pal[i%pal.length]; cols[i*3]=c.r; cols[i*3+1]=c.g; cols[i*3+2]=c.b;
+          vel.push({ vy:0.5+Math.random()*0.75, vx:(Math.random()-0.5)*0.3, phase:Math.random()*6.28 });
+        }
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute("position", new THREE.BufferAttribute(pos,3)); geo.setAttribute("color", new THREE.BufferAttribute(cols,3));
+        this.particles = new THREE.Points(geo, new THREE.PointsMaterial({ size:style==="flowers"?0.26:0.21, map:this.sparkTex(), vertexColors:true, transparent:true, depthWrite:false, blending:THREE.AdditiveBlending }));
+        this.refs.pVel = vel; this.scene.add(this.particles);
+      }
+      buildScene(photos) {
+        const g = this.group, m = this.mode;
+        const gold = new THREE.MeshStandardMaterial({color:0xffca28,metalness:0.68,roughness:0.2});
+        const pink = new THREE.MeshStandardMaterial({color:0xf06292,roughness:0.28,metalness:0.08});
+        const rose = new THREE.MeshStandardMaterial({color:0xe11d48,roughness:0.25,emissive:0x4c0519});
+        const cream = new THREE.MeshStandardMaterial({color:0xfff9f0,roughness:0.32});
+        const leafMat = new THREE.MeshStandardMaterial({color:0x22c55e,roughness:0.42});
+
+        if (m==="sprinkles_3d" || m==="flower_sprinkles_3d") {
+          const core = new THREE.Mesh(new THREE.OctahedronGeometry(0.62,1), gold);
+          const ring = new THREE.Mesh(new THREE.TorusGeometry(1.15,0.04,16,48), gold); ring.rotation.x = 0.7;
+          this.refs.orbRing = ring; g.add(core, ring);
+          for (let i=0; i<12; i++) {
+            const a=(i/12)*Math.PI*2, pet=new THREE.Mesh(new THREE.SphereGeometry(0.3,18,18), i%2?pink:rose);
+            pet.scale.set(1.35,0.3,0.65); pet.position.set(Math.cos(a)*0.88, Math.sin(a*2)*0.1, Math.sin(a)*0.88); pet.rotation.y=-a; g.add(pet);
+          }
+        } else if (m==="cake_cutting_3d") {
+          const cake = new THREE.Group();
+          const plate = new THREE.Mesh(new THREE.CylinderGeometry(1.55,1.55,0.08,40), cream); plate.position.y=-0.68;
+          const t1 = new THREE.Mesh(new THREE.CylinderGeometry(1.25,1.28,0.62,40), pink); t1.position.y=-0.34;
+          const t2 = new THREE.Mesh(new THREE.CylinderGeometry(0.88,0.9,0.52,40), cream); t2.position.y=0.24;
+          cake.add(plate, t1, t2);
+          for (let i=0; i<14; i++) {
+            const a=(i/14)*Math.PI*2, dot=new THREE.Mesh(new THREE.SphereGeometry(0.11,14,14), cream);
+            dot.position.set(Math.cos(a)*1.16,-0.02,Math.sin(a)*1.16); cake.add(dot);
+            if(i%2===0){ const ch=new THREE.Mesh(new THREE.SphereGeometry(0.08,12,12),rose); ch.position.set(Math.cos(a)*0.72,0.52,Math.sin(a)*0.72); cake.add(ch); }
+          }
+          const slice = new THREE.Group();
+          const sl1 = new THREE.Mesh(new THREE.CylinderGeometry(1.27,1.3,0.64,16,1,false,0,0.58), new THREE.MeshStandardMaterial({color:0xff80ab,roughness:0.3})); sl1.position.y=-0.33;
+          const sl2 = new THREE.Mesh(new THREE.CylinderGeometry(0.9,0.92,0.54,16,1,false,0,0.58), cream); sl2.position.y=0.25;
+          slice.add(sl1, sl2); this.refs.cakeSlice = slice; cake.add(slice);
+          this.refs.flames = [];
+          [[-0.36,0],[0,0.36],[0.36,0],[0,-0.36],[0,0]].forEach(([cx,cz]) => {
+            const c=new THREE.Mesh(new THREE.CylinderGeometry(0.045,0.045,0.4,14), new THREE.MeshStandardMaterial({color:0x38bdf8})); c.position.set(cx,0.68,cz);
+            const fl=new THREE.Mesh(new THREE.SphereGeometry(0.075,12,12), new THREE.MeshStandardMaterial({color:0xffeb3b,emissive:0xff9800,emissiveIntensity:2.3}));
+            fl.scale.set(0.8,1.4,0.8); fl.position.set(cx,0.95,cz); this.refs.flames.push(fl); cake.add(c,fl);
+          });
+          const knife = new THREE.Group();
+          const blade = new THREE.Mesh(new THREE.BoxGeometry(0.04,0.22,1.15), new THREE.MeshStandardMaterial({color:0xf1f5f9,metalness:0.9,roughness:0.1}));
+          const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.06,0.06,0.5,14), gold); handle.rotation.x=Math.PI/2; handle.position.z=0.8;
+          knife.add(blade, handle); knife.position.set(0.28,1.35,0.48); this.refs.knife=knife; cake.add(knife); g.add(cake);
+        } else if (m==="gift_open_3d") {
+          const base = new THREE.Mesh(new THREE.BoxGeometry(1.4,1.05,1.4), rose);
+          const r1 = new THREE.Mesh(new THREE.BoxGeometry(0.22,1.08,1.44), gold), r2 = new THREE.Mesh(new THREE.BoxGeometry(1.44,1.08,0.22), gold);
+          g.add(base, r1, r2);
+          const lid = new THREE.Group(); lid.position.set(0,0.55,-0.72);
+          const lBox = new THREE.Mesh(new THREE.BoxGeometry(1.52,0.24,1.52), pink); lBox.position.z=0.72;
+          const bow = new THREE.Mesh(new THREE.TorusKnotGeometry(0.22,0.06,56,10), gold); bow.position.set(0,0.22,0.72);
+          lid.add(lBox, bow); this.refs.giftLid=lid; g.add(lid);
+          const gift = new THREE.Mesh(new THREE.ExtrudeGeometry(this.heartShape(0.7),{depth:0.25,bevelEnabled:true,bevelSize:0.06,bevelThickness:0.06}), gold);
+          gift.position.set(0,-0.05,-0.1); this.refs.presentedGift=gift; g.add(gift);
+        } else if (m==="heart_open_3d") {
+          const leftH = new THREE.Mesh(new THREE.ExtrudeGeometry(this.heartShape(1.12),{depth:0.28,bevelEnabled:true,bevelSize:0.08,bevelThickness:0.08}), rose);
+          const rightH = leftH.clone(); leftH.position.set(-0.1,0.1,0.02); rightH.position.set(0.1,0.1,-0.04);
+          this.refs.heartL=leftH; this.refs.heartR=rightH;
+          const gem = new THREE.Mesh(new THREE.OctahedronGeometry(0.45,0), gold); this.refs.heartGem=gem; g.add(leftH,rightH,gem);
+        } else if (m==="bouquet_3d") {
+          const cone = new THREE.Mesh(new THREE.ConeGeometry(0.78,1.5,28,1,true), new THREE.MeshStandardMaterial({color:0xfff1f5,side:THREE.DoubleSide,roughness:0.4}));
+          cone.rotation.x=Math.PI; cone.position.y=-0.58;
+          const rib = new THREE.Mesh(new THREE.TorusGeometry(0.32,0.06,14,28), gold); rib.rotation.x=Math.PI/2; rib.position.y=-0.55;
+          g.add(cone, rib); this.refs.roses=[];
+          [[0,0.52,0],[-0.45,0.34,0.22],[0.45,0.34,0.22],[0,0.38,-0.42],[0.32,0.44,-0.22],[-0.32,0.44,-0.22]].forEach(([rx,ry,rz],i) => {
+            const rg = new THREE.Group(), bud = new THREE.Mesh(new THREE.TorusKnotGeometry(0.2,0.08,48,10), i%2?rose:pink);
+            const lf = new THREE.Mesh(new THREE.SphereGeometry(0.18,12,12), leafMat); lf.scale.set(1.4,0.25,0.7); lf.position.set(0,-0.18,0.15);
+            rg.add(bud, lf); rg.position.set(rx,ry,rz); this.refs.roses.push({mesh:rg,base:new THREE.Vector3(rx,ry,rz)}); g.add(rg);
+          });
+        } else if (m==="hug_3d") {
+          const skin = new THREE.MeshStandardMaterial({color:0xffdfc4,roughness:0.45}), eyeM = new THREE.MeshBasicMaterial({color:0x2d1020}), blM = new THREE.MeshBasicMaterial({color:0xff8da1});
+          const mkBuddy = (col) => {
+            const b = new THREE.Group(), coat = new THREE.MeshStandardMaterial({color:col,roughness:0.32});
+            const torso = new THREE.Mesh(new THREE.CylinderGeometry(0.28,0.38,0.85,24), coat); torso.position.y=-0.15;
+            const neck = new THREE.Mesh(new THREE.SphereGeometry(0.28,20,20), coat); neck.position.y=0.26;
+            const hg = new THREE.Group(); hg.position.y=0.64;
+            const hd = new THREE.Mesh(new THREE.SphereGeometry(0.34,24,24), skin);
+            const eL = new THREE.Mesh(new THREE.SphereGeometry(0.04,10,10), eyeM); eL.position.set(-0.11,0.04,0.31);
+            const eR = eL.clone(); eR.position.x=0.11;
+            const blL = new THREE.Mesh(new THREE.SphereGeometry(0.05,10,10), blM); blL.scale.set(1.2,0.7,0.4); blL.position.set(-0.18,-0.05,0.28);
+            const blR = blL.clone(); blR.position.x=0.18; hg.add(hd,eL,eR,blL,blR);
+            const mkA = (side) => {
+              const p = new THREE.Group(); p.position.set(side*0.33,0.16,0.05);
+              const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.075,0.075,0.62,14), coat); arm.rotation.x=Math.PI/2; arm.position.z=0.28;
+              const hnd = new THREE.Mesh(new THREE.SphereGeometry(0.085,12,12), skin); hnd.position.z=0.58; p.add(arm,hnd); return p;
+            };
+            const armL=mkA(-1), armR=mkA(1); b.add(torso,neck,hg,armL,armR); b.userData={armL,armR,headGrp:hg}; return b;
+          };
+          const b1=mkBuddy(0xec407a), b2=mkBuddy(0x60a5fa); b1.position.set(-1.05,-0.05,0); b1.rotation.y=Math.PI/2; b2.position.set(1.05,-0.05,0); b2.rotation.y=-Math.PI/2;
+          this.refs.hugHearts = [];
+          const hGeo = new THREE.ExtrudeGeometry(this.heartShape(0.28),{depth:0.1,bevelEnabled:true,bevelSize:0.03,bevelThickness:0.03});
+          for(let i=0;i<8;i++){ const hm=new THREE.Mesh(hGeo,i%2?rose:pink), ang=(i/8)*Math.PI*2; hm.position.set(Math.cos(ang)*0.6,0.9,Math.sin(ang)*0.6); this.refs.hugHearts.push({mesh:hm,phase:i*0.8}); g.add(hm); }
+          this.refs.hug1=b1; this.refs.hug2=b2; g.add(b1,b2);
+        } else if (m==="anniversary_3d") {
+          const r1=new THREE.Mesh(new THREE.TorusGeometry(0.75,0.11,24,56),gold), r2=new THREE.Mesh(new THREE.TorusGeometry(0.75,0.11,24,56),gold);
+          r1.position.x=-0.36; r1.rotation.y=0.55; r2.position.x=0.36; r2.rotation.y=-0.55; r2.rotation.x=0.8;
+          g.add(r1,r2,new THREE.Mesh(new THREE.ExtrudeGeometry(this.heartShape(0.55),{depth:0.2,bevelEnabled:true,bevelSize:0.05,bevelThickness:0.05}),rose));
+        } else if (m==="baby_welcome_3d") {
+          const moon=new THREE.Mesh(new THREE.TorusGeometry(0.85,0.2,20,48,Math.PI*1.35),gold); moon.rotation.z=0.7;
+          const star=new THREE.Mesh(new THREE.OctahedronGeometry(0.32,0),gold); star.position.set(0.3,0.2,0.2);
+          [[-0.8,-0.55,0.2],[0,-0.65,0.3],[0.8,-0.5,0.1]].forEach(([cx,cy,cz])=>{ const cl=new THREE.Mesh(new THREE.SphereGeometry(0.36,18,18),cream); cl.position.set(cx,cy,cz); cl.scale.set(1.45,0.8,1); g.add(cl); });
+          g.add(moon,star);
+        } else if (m==="doors_3d") {
+          const portal=new THREE.Mesh(new THREE.PlaneGeometry(1.7,2.1), new THREE.MeshBasicMaterial({color:0xfef08a})); portal.position.z=-0.15;
+          const dL=new THREE.Group(); dL.position.set(-0.85,0,0); const mL=new THREE.Mesh(new THREE.BoxGeometry(0.84,2.1,0.1),pink); mL.position.x=0.42; dL.add(mL);
+          const dR=new THREE.Group(); dR.position.set(0.85,0,0); const mR=new THREE.Mesh(new THREE.BoxGeometry(0.84,2.1,0.1),pink); mR.position.x=-0.42; dR.add(mR);
+          this.refs.doorL=dL; this.refs.doorR=dR; g.add(portal,dL,dR);
+        } else if (m==="photo_3d") {
+          const list = photos.length ? photos : SAMPLES.slice(0,3), count = Math.max(list.length,3), rad = 1.48;
+          for (let i=0; i<count; i++) {
+            const p = list[i%list.length], frame = new THREE.Mesh(new THREE.BoxGeometry(1.18,0.96,0.06), cream), img = new Image();
+            img.onload = () => {
+              const tex = new THREE.Texture(img); tex.minFilter=THREE.LinearFilter; tex.generateMipmaps=false; tex.needsUpdate=true;
+              const pic = new THREE.Mesh(new THREE.PlaneGeometry(1.04,0.82), new THREE.MeshBasicMaterial({map:tex,side:THREE.DoubleSide})); pic.position.z=0.04;
+              const back = pic.clone(); back.position.z=-0.04; back.rotation.y=Math.PI; frame.add(pic,back);
+            };
+            img.src = p.url;
+            const ang = (i/count)*Math.PI*2; frame.position.set(Math.sin(ang)*rad, 0.06, Math.cos(ang)*rad); frame.rotation.y=ang; g.add(frame);
+          }
+        }
+      }
+      trigger() { this.triggered = true; this.burst = 2.4; }
+      update(dt) {
+        this.time += dt; const sm = 1 - Math.exp(-6 * dt);
+        if (!this.dragging) this.targetRotY += (this.mode==="doors_3d"||this.mode==="hug_3d") ? 0 : dt*0.6;
+        this.rotY += (this.targetRotY - this.rotY) * (1 - Math.exp(-10*dt));
+        this.group.rotation.y = this.rotY; this.group.position.y = Math.sin(this.time*1.8)*0.07;
+        this.camera.position.z += ((this.triggered?4.35:5.0) - this.camera.position.z) * (1 - Math.exp(-3.5*dt));
+        if (this.halo) { this.halo.rotation.z += dt*0.8; this.halo.material.opacity = 0.35 + Math.sin(this.time*3)*0.15; }
+        if (this.refs.orbRing) this.refs.orbRing.rotation.z += dt*1.4;
+        if (this.mode==="cake_cutting_3d") {
+          if (this.refs.knife) this.refs.knife.position.y += ((this.triggered?0.12:1.35) - this.refs.knife.position.y)*sm;
+          if (this.refs.cakeSlice) { const t=this.triggered?0.48:0; this.refs.cakeSlice.position.x+=(t-this.refs.cakeSlice.position.x)*sm; this.refs.cakeSlice.position.z+=(t-this.refs.cakeSlice.position.z)*sm; }
+          if (this.refs.flames) this.refs.flames.forEach((f,i)=>{ f.visible=!this.triggered; f.scale.y=1.3+Math.sin(this.time*14+i)*0.22; });
+        }
+        if (this.mode==="gift_open_3d" && this.refs.giftLid) {
+          this.refs.giftLid.rotation.x += ((this.triggered?-1.9:0) - this.refs.giftLid.rotation.x)*sm;
+          this.refs.presentedGift.position.y += ((this.triggered?1.05:-0.05) - this.refs.presentedGift.position.y)*sm;
+          this.refs.presentedGift.rotation.y += dt*1.5;
+        }
+        if (this.mode==="heart_open_3d" && this.refs.heartL) {
+          this.refs.heartL.position.x += ((this.triggered?-0.88:-0.1) - this.refs.heartL.position.x)*sm;
+          this.refs.heartR.position.x += ((this.triggered?0.88:0.1) - this.refs.heartR.position.x)*sm;
+          const gs=this.triggered?1.25+Math.sin(this.time*4)*0.12:0.4; this.refs.heartGem.scale.lerp(new THREE.Vector3(gs,gs,gs),sm); this.refs.heartGem.rotation.y+=dt*1.8;
+        }
+        if (this.mode==="bouquet_3d" && this.refs.roses) {
+          this.refs.roses.forEach(r=>{ const sp=this.triggered?1.35:0.96, sc=this.triggered?1.2:0.88; r.mesh.position.x+=(r.base.x*sp-r.mesh.position.x)*sm; r.mesh.position.z+=(r.base.z*sp-r.mesh.position.z)*sm; r.mesh.scale.lerp(new THREE.Vector3(sc,sc,sc),sm); r.mesh.rotation.y+=dt*0.8; });
+        }
+        if (this.mode==="hug_3d" && this.refs.hug1) {
+          const d=this.triggered?0.28:1.02, w=this.triggered?0.58:0.05, tl=this.triggered?0.18:0;
+          this.refs.hug1.position.x+=(-d-this.refs.hug1.position.x)*sm; this.refs.hug2.position.x+=(d-this.refs.hug2.position.x)*sm;
+          this.refs.hug1.position.z+=((this.triggered?0.08:0)-this.refs.hug1.position.z)*sm; this.refs.hug2.position.z+=((this.triggered?-0.08:0)-this.refs.hug2.position.z)*sm;
+          this.refs.hug1.userData.armL.rotation.y+=(-w-this.refs.hug1.userData.armL.rotation.y)*sm; this.refs.hug1.userData.armR.rotation.y+=(w-this.refs.hug1.userData.armR.rotation.y)*sm;
+          this.refs.hug2.userData.armL.rotation.y+=(-w-this.refs.hug2.userData.armL.rotation.y)*sm; this.refs.hug2.userData.armR.rotation.y+=(w-this.refs.hug2.userData.armR.rotation.y)*sm;
+          this.refs.hug1.userData.headGrp.rotation.z+=(tl-this.refs.hug1.userData.headGrp.rotation.z)*sm; this.refs.hug2.userData.headGrp.rotation.z+=(-tl-this.refs.hug2.userData.headGrp.rotation.z)*sm;
+          this.refs.hugHearts?.forEach(h=>{ const hs=this.triggered?1.15:0.35; h.mesh.scale.lerp(new THREE.Vector3(hs,hs,hs),sm); h.mesh.position.y=(this.triggered?1.1:0.85)+Math.sin(this.time*2.5+h.phase)*0.24; h.mesh.rotation.y+=dt*1.5; });
+        }
+        if (this.mode==="doors_3d" && this.refs.doorL) {
+          const a=this.triggered?1.4:0; this.refs.doorL.rotation.y+=(-a-this.refs.doorL.rotation.y)*sm; this.refs.doorR.rotation.y+=(a-this.refs.doorR.rotation.y)*sm;
+        }
+        if (this.particles && this.refs.pVel) {
+          const pos=this.particles.geometry.attributes.position, mult=1+this.burst*3.0; this.burst=Math.max(0,this.burst-dt*1.4);
+          for(let i=0;i<pos.count;i++){ const v=this.refs.pVel[i]; let y=pos.getY(i)-v.vy*dt*mult, x=pos.getX(i)+(v.vx+Math.sin(this.time+v.phase)*0.12)*dt*mult; if(y<-2.7){y=2.7;x=(Math.random()-0.5)*8;} pos.setXY(i,x,y); }
+          pos.needsUpdate=true; this.particles.rotation.y+=dt*0.14;
+        }
+      }
+    }
+
+    const preview4D = new Wish4DEngine(), standalone4D = new Wish4DEngine();
+
+    const sc = (type, title, headline, subtext="", extra={}) => ({
+      sceneId: uid("scn"), type, title, headline, subtext,
+      mode3d: extra.mode3d || "sprinkles_3d", body: extra.body || "",
+      g1: extra.g1 || "#ffdde8", g2: extra.g2 || "#fbcfe8",
+      darkText: extra.darkText !== undefined ? extra.darkText : true,
+      photoEffect: extra.photoEffect || "photo_3d",
+      photos: (type==="photo_surprise" || extra.mode3d==="photo_3d") ? clone(extra.photos || SAMPLES.slice(0,3)) : [],
+      interactLabel: extra.interactLabel || "",
+      qaList: extra.qaList ? clone(extra.qaList) : null
+    });
+    const qItem = (prompt, choices, correctIdx=-1, reply="That is such a sweet answer!", wrongReply="Haha nice guess! Still love you!") =>
+      ({ prompt, choices, correctIdx, reply, wrongReply });
+
+    const INITIAL_CATEGORIES = [
+      { id:"birthday", name:"Birthday Wish", icon:"🎂" },
+      { id:"anniversary", name:"Anniversary Wish", icon:"💍" },
+      { id:"valentine", name:"Valentine Wish", icon:"❤️" },
+      { id:"couples-day", name:"Couples Day Wish", icon:"💑" },
+      { id:"baby-born", name:"Baby Born / Welcome", icon:"👶" },
+      { id:"welcome", name:"Welcome Wish", icon:"🚪" },
+      { id:"special-days", name:"Special Day Wish", icon:"✨" },
+      { id:"wedding", name:"Wedding Wish", icon:"💒" }
+    ];
+
+    const catQAs = {
+      birthday: [qItem("What deserves to happen on your birthday?",["Endless cake & smiles","A surprise gift from {{senderName}}","Both A & B!"],2,"100% right! You deserve it all today!"), qItem("Who is the true star of today?",["{{recipientName}}!","Everyone celebrating you!"],0,"Happy Birthday superstar {{recipientName}}!"), qItem("Ready for your birthday celebration?",["Yes, let's party!","Bring more cake!"],-1,"Cheers to your best year yet!")],
+      anniversary: [qItem("What is my favorite thing about us?",["Our inside jokes","Feeling at home with you","Every single second!"],2,"You know my heart so well!"), qItem("Who fell in love faster?",["{{senderName}}","{{recipientName}}","Both at first sight!"],2,"Best love story ever!"), qItem("Will you stay my forever partner?",["Yes, always!","1000 times yes!"],-1,"Forever and always together!")],
+      valentine: [qItem("Will you be my Valentine today & always?",["Yes, 1000 times yes!","Already yours forever!"],-1,"You just made me the happiest!"), qItem("How many roses do you deserve?",["A bouquet","A million 4D roses!"],1,"Sending you a million 4D roses!"), qItem("What is my favorite view?",["Sunsets","Your smile!"],1,"Always your gorgeous smile!")],
+      "couples-day": [qItem("What makes us the best duo?",["Same humor","Endless support","Everything together!"],2,"Best team forever!"), qItem("Who picks what we eat?",["{{recipientName}}","{{senderName}}","40 mins deciding together!"],-1,"Haha too accurate! Dinner date soon!"), qItem("Next adventure together?",["Mountains","Beach","Anywhere with you!"],-1,"Bags packed with love!")],
+      "baby-born": [qItem("Who does Baby {{recipientName}} look like?",["Mom's eyes","Dad's smile","Perfect mix of both!"],-1,"Adorable beyond words!"), qItem("How excited is the family?",["Beyond thrilled!","Over the moon!"],-1,"Pure blessing from above!"), qItem("First wish for our little angel?",["Health & happiness","Endless smiles","Both forever!"],-1,"May joy follow always!")],
+      welcome: [qItem("Did we miss you?",["A little","SO MUCH!"],1,"We missed you SO MUCH! Welcome back!"), qItem("How does it feel stepping in?",["Amazing!","Just like home!"],-1,"Home sweet home!"), qItem("First welcome treat?",["Coffee & catch-up","Celebration dinner!"],-1,"Both are on us!")],
+      "special-days": [qItem("Know how appreciated you are?",["A little","A whole lot — even more now!"],1,"You deserve every bit of celebration!"), qItem("Proud of how far you've come?",["Super proud!","Just getting started!"],-1,"The sky is the limit!"), qItem("Ready for your surprise gift?",["Yes!","Always ready!"],-1,"Enjoy your special day!")],
+      wedding: [qItem("Secret to a joyful marriage?",["Patience & love","Laughter & dessert","Both forever!"],2,"Wishing you lifelong joy together!"), qItem("Ready for happily ever after?",["Yes!","Forever begins today!"],-1,"Mubarak to the beautiful couple!"), qItem("Best blessing for the newlyweds?",["Endless love","Lifetime of smiles!"],-1,"Cheers to endless happiness!")]
+    };
+
+    const MODES_4D = [
+      ["hug_3d","🤗 4D Warm Hug Animation"],["sprinkles_3d","✨ 4D Animation Sprinkles"],["flower_sprinkles_3d","🌸 4D Flower Sprinkles"],
+      ["cake_cutting_3d","🎂 4D Cake Cutting"],["gift_open_3d","🎁 4D Gift Opening & Presenting"],["heart_open_3d","💖 4D Heart Opening"],
+      ["bouquet_3d","💐 4D Valentine Bouquet"],["anniversary_3d","💍 4D Anniversary Rings"],["baby_welcome_3d","👶 4D Baby Welcome"],
+      ["doors_3d","🚪 4D Opening Doors"],["photo_3d","🖼️ 4D Photo Carousel"]
+    ];
+
+    const TPL_DEFS = [
+      ["b1","birthday","Magical Birthday Surprise","4D sprinkles, cake cutting, gift box, 4D photos & 3 Q&A.","sprinkles_3d","cake_cutting_3d","Cut Your Birthday Cake!","🔪 Cut Cake & Wish","photo_3d"],
+      ["b2","birthday","4D Birthday Cake Celebration","Flower sprinkles, cake cutting, gift box, Polaroids & 3 Q&A.","flower_sprinkles_3d","cake_cutting_3d","Make a Wish & Cut Cake!","🎂 Cut Birthday Cake","polaroid_reveal"],
+      ["b3","birthday","Photo Memories Birthday Story","4D sprinkles, 4D hug, gift box, timeline & 3 Q&A.","sprinkles_3d","hug_3d","Sending a Big 4D Hug!","🤗 Send Warm Hug","memory_timeline"],
+      ["b4","birthday","Interactive Birthday Questions & Gift","Flower sprinkles, 4D bouquet, gift box, album & 3 Q&A.","flower_sprinkles_3d","bouquet_3d","Birthday Blooms For You!","💐 Bloom Bouquet","opening_photo_album"],
+      ["a1","anniversary","Our Love Story","4D rings, heart opening, gift box, 4D photos & 3 Q&A.","anniversary_3d","heart_open_3d","Open My Heart","💖 Open Heart","photo_3d"],
+      ["a2","anniversary","Romantic Surprise Gift Box","Flower sprinkles, 4D bouquet, gift box, photos & 3 Q&A.","flower_sprinkles_3d","bouquet_3d","A Bouquet For You","💐 Bloom Bouquet","gift_box_photos"],
+      ["a3","anniversary","Our Beautiful Memories","4D rings, 4D hug, gift box, heart mosaic & 3 Q&A.","anniversary_3d","hug_3d","A Warm Anniversary Hug","🤗 Send Warm Hug","heart_shaped_reveal"],
+      ["a4","anniversary","Interactive Love Quiz","Heart opening, 4D rings, gift box, Polaroids & 3 Q&A.","heart_open_3d","anniversary_3d","Forever Connected","💍 Shine Rings","polaroid_reveal"],
+      ["v1","valentine","Magical Love Letter","Flower sprinkles, heart opening, gift box, 4D photos & 3 Q&A.","flower_sprinkles_3d","heart_open_3d","Inside My Heart","❤️ Open Heart","photo_3d"],
+      ["v2","valentine","4D Rose and Heart Surprise","4D sprinkles, Valentine bouquet, gift box, mosaic & 3 Q&A.","sprinkles_3d","bouquet_3d","A Rose Bouquet For You","🌹 Bloom Bouquet","heart_shaped_reveal"],
+      ["v3","valentine","Our Romantic Memories","Heart opening, 4D hug, gift box, floating frames & 3 Q&A.","heart_open_3d","hug_3d","Sending a Valentine Hug","🤗 Send Warm Hug","floating_photo_frames"],
+      ["v4","valentine","Interactive Valentine Love Quiz","4D bouquet, flower sprinkles, gift box, Polaroids & 3 Q&A.","bouquet_3d","flower_sprinkles_3d","Showering You With Petals","🌸 Shower Petals","polaroid_reveal"],
+      ["c1","couples-day","Our Journey Together","4D hug, 4D rings, gift box, 4D photos & 3 Q&A.","hug_3d","anniversary_3d","Our Journey Together","✨ Sparkle Together","photo_3d"],
+      ["c2","couples-day","Romantic Memory Collection","Flower sprinkles, 4D bouquet, gift box, album & 3 Q&A.","flower_sprinkles_3d","bouquet_3d","Blooming Together","💐 Bloom Bouquet","opening_photo_album"],
+      ["c3","couples-day","4D Couple Surprise","Opening doors, 4D hug, gift box, heart photos & 3 Q&A.","doors_3d","hug_3d","Warmest Hug For You","🤗 Send Warm Hug","heart_shaped_reveal"],
+      ["c4","couples-day","Interactive Couple Quiz","Heart opening, 4D sprinkles, gift box, timeline & 3 Q&A.","heart_open_3d","sprinkles_3d","Celebrating Us!","✨ Burst Sprinkles","memory_timeline"],
+      ["bb1","baby-born","Welcome Little Angel","Baby moon & clouds, 4D sprinkles, gift box, 4D photos & 3 Q&A.","baby_welcome_3d","sprinkles_3d","Blessed Arrival!","✨ Shower Stars","photo_3d"],
+      ["bb2","baby-born","Baby Name Reveal","Flower sprinkles, baby welcome, gift box, Polaroids & 3 Q&A.","flower_sprinkles_3d","baby_welcome_3d","Meet {{recipientName}}!","🌙 Shine Blessings","polaroid_reveal"],
+      ["bb3","baby-born","Cute Baby Photo Surprise","Baby welcome, 4D hug, gift box, album & 3 Q&A.","baby_welcome_3d","hug_3d","Wrapped in Love","🤗 Send Warm Hug","opening_photo_album"],
+      ["bb4","baby-born","Welcome Baby Interactive Story","Opening doors, baby welcome, gift box, frames & 3 Q&A.","doors_3d","baby_welcome_3d","Sweet Dreams {{recipientName}}","⭐ Twinkle Stars","floating_photo_frames"],
+      ["w1","welcome","Welcome Back Surprise","4D sprinkles, opening doors, gift box, 4D photos & 3 Q&A.","sprinkles_3d","doors_3d","Step Right In!","🚪 Open Doors","photo_3d"],
+      ["w2","welcome","Opening Door Celebration","Opening doors, 4D hug, gift box, gift photos & 3 Q&A.","doors_3d","hug_3d","A Huge Warm Hug!","🤗 Send Warm Hug","gift_box_photos"],
+      ["w3","welcome","Photo Memories Welcome Story","Flower sprinkles, opening doors, gift box, timeline & 3 Q&A.","flower_sprinkles_3d","doors_3d","Doors Open For You","🚪 Open Doors","memory_timeline"],
+      ["w4","welcome","Interactive Welcome Questions","4D sprinkles, 4D bouquet, gift box, Polaroids & 3 Q&A.","sprinkles_3d","bouquet_3d","Flowers For You!","💐 Bloom Bouquet","polaroid_reveal"],
+      ["s1","special-days","Beautiful Memories","Flower sprinkles, heart opening, gift box, 4D photos & 3 Q&A.","flower_sprinkles_3d","heart_open_3d","From the Heart","💖 Open Heart","photo_3d"],
+      ["s2","special-days","Celebration Surprise","4D sprinkles, cake cutting, gift box, photos & 3 Q&A.","sprinkles_3d","cake_cutting_3d","Celebrate Your Milestone!","🎂 Cut Cake","gift_box_photos"],
+      ["s3","special-days","Personalized Photo Story","4D hug, 4D bouquet, gift box, timeline & 3 Q&A.","hug_3d","bouquet_3d","Honoring You Today","💐 Bloom Flowers","memory_timeline"],
+      ["s4","special-days","Interactive Special Day Experience","Opening doors, 4D sprinkles, gift box, Polaroids & 3 Q&A.","doors_3d","sprinkles_3d","Shining Bright!","✨ Burst Sprinkles","polaroid_reveal"],
+      ["wd1","wedding","Royal Wedding Story","Opening doors, 4D rings, gift box, 4D photos & 3 Q&A.","doors_3d","anniversary_3d","Two Hearts, One Forever","💍 Shine Rings","photo_3d"],
+      ["wd2","wedding","Forever Together Gift Box","Flower sprinkles, 4D bouquet, gift box, album & 3 Q&A.","flower_sprinkles_3d","bouquet_3d","May Your Love Bloom","💐 Bloom Bouquet","opening_photo_album"],
+      ["wd3","wedding","Wedding Memories Album","Heart opening, 4D rings, gift box, heart mosaic & 3 Q&A.","heart_open_3d","anniversary_3d","Bound in Love","✨ Sparkle Rings","heart_shaped_reveal"],
+      ["wd4","wedding","Interactive Couple Wedding Quiz","4D hug, flower sprinkles, gift box, Polaroids & 3 Q&A.","hug_3d","flower_sprinkles_3d","Blessings & Petals","🌸 Shower Petals","polaroid_reveal"]
+    ];
+
+    const INITIAL_TEMPLATES = TPL_DEFS.map(([id,cat,title,desc,o3,m3,mh,mb,pe]) => ({
+      id, cat, title, desc, archived:false,
+      scenes: [
+        sc("3d_scene","4D Opening & Sprinkles","A 4D Wish for {{recipientName}}","Drag to rotate 4D • Tap for burst",{mode3d:o3,interactLabel:"✨ Burst 4D Sprinkles"}),
+        sc("3d_scene","4D Special Moment",mh,"Tap below to activate 4D",{mode3d:m3,interactLabel:mb}),
+        sc("3d_scene","4D Gift Box & Presenting","A Special Gift For {{recipientName}}","Wrapped with love by {{senderName}}",{mode3d:"gift_open_3d",interactLabel:"🎁 Open & Present 4D Gift"}),
+        sc("photo_surprise","Customer Photos & Effects","Precious Memories","",{photoEffect:pe}),
+        sc("story","Story & Wishes","Wishes From {{senderName}}","To dearest {{recipientName}}",{body:"{{personalMessage}}"}),
+        sc("qa","Interactive Questions (3 Q&A)","","",{qaList:catQAs[cat]})
+      ]
+    }));
+
+    function encodeWishHash(data) {
+      const c = { r:data.recipientName, s:data.senderName, m:data.musicOn?1:0, c:data.scenes.map(scn=>({
+        t:scn.type, h:scn.headline, u:scn.subtext, b:scn.body, m3:scn.mode3d, g:[scn.g1,scn.g2], d:scn.darkText?1:0, i:scn.interactLabel, e:scn.photoEffect,
+        p:(scn.type==="photo_surprise"||scn.mode3d==="photo_3d")?(scn.photos||[]).map(ph=>({k:ph.id.startsWith("sp")?ph.id:"",u:ph.id.startsWith("sp")?"":ph.url,c:ph.caption})):[], ql:scn.qaList
+      }))};
+      return "#wish=" + btoa(unescape(encodeURIComponent(JSON.stringify(c))));
+    }
+    function decodeWishHash() {
+      if (!location.hash.startsWith("#wish=")) return null;
+      try {
+        const c = JSON.parse(decodeURIComponent(escape(atob(location.hash.slice(6)))));
+        return { recipientName:c.r, senderName:c.s, musicOn:!!c.m, scenes:(c.c||[]).map(x=>({
+          type:x.t, headline:x.h, subtext:x.u, body:x.b, mode3d:x.m3||"sprinkles_3d", g1:x.g[0], g2:x.g[1], darkText:!!x.d, interactLabel:x.i, photoEffect:x.e,
+          photos:(x.p||[]).map(ph=>{const sp=SAMPLES.find(z=>z.id===ph.k); return{id:ph.k||"up",url:sp?sp.url:ph.u,caption:ph.c};}), qaList:x.ql||null
+        }))};
+      } catch(e) { return null; }
+    }
+
+    let SHARED_MODE_DATA = decodeWishHash();
+    window.addEventListener("hashchange", () => { SHARED_MODE_DATA = decodeWishHash(); render(); });
+    const isLocalFile = () => location.protocol==="file:" || location.protocol==="content:";
+
+    const app = {
+      categories: JSON.parse(localStorage.getItem("ws7_cats")||"null") || INITIAL_CATEGORIES,
+      templates: JSON.parse(localStorage.getItem("ws7_tpls")||"null") || INITIAL_TEMPLATES,
+      wishologyBaseUrl: localStorage.getItem("ws7_url") || (isLocalFile() ? "https://wishology01.github.io/" : location.href.split("#")[0]),
+      activeCat:"birthday", project:null, customerPreviewMode:false, showShareModal:false,
+      step:1, selSceneIdx:0, previewIdx:0, previewStarted:false, interacted:false, qaIdx:0, qaPicked:null, albumIdx:0, sharedLink:"",
+
+      saveLib(){ localStorage.setItem("ws7_cats",JSON.stringify(this.categories)); localStorage.setItem("ws7_tpls",JSON.stringify(this.templates)); },
+      setWishologyUrl(v){ this.wishologyBaseUrl=v.trim(); localStorage.setItem("ws7_url",this.wishologyBaseUrl); this.generateShareLink(false); const i=document.getElementById("share-link-input"); if(i)i.value=this.sharedLink; },
+      addCategory(){ const n=prompt("New Category Name:"); if(!n||!n.trim())return; const id=n.toLowerCase().replace(/[^a-z0-9]+/g,"-"); this.categories.push({id,name:n.trim(),icon:"🎀"}); this.activeCat=id; this.saveLib(); render(); },
+      personalize(id){
+        const t=this.templates.find(x=>x.id===id); if(!t)return;
+        this.project={sourceId:t.id,sourceTitle:t.title,cat:t.cat,musicOn:true,vars:{recipientName:"Ayesha",senderName:"Hamza",personalMessage:"Every moment with you turns into a memory worth celebrating forever."},scenes:clone(t.scenes)};
+        this.customerPreviewMode=false; this.showShareModal=false; this.step=1; this.selSceneIdx=0; this.previewIdx=0; this.previewStarted=false; this.interacted=false; this.qaIdx=0; this.qaPicked=null; this.albumIdx=0; render();
+      },
+      saveAsNewTemplate(){ const t=prompt("Save as New Template:",this.project.sourceTitle+" Custom"); if(!t)return; this.templates.push({id:uid("tpl"),cat:this.project.cat,title:t.trim(),desc:"Custom 4D Wishology template.",archived:false,scenes:clone(this.project.scenes)}); this.saveLib(); alert("Saved!"); },
+      moveScene(i,d){ const s=this.project.scenes,n=i+d; if(n<0||n>=s.length)return; [s[i],s[n]]=[s[n],s[i]]; this.selSceneIdx=n; this.previewIdx=n; render(); },
+      removeScene(i){ if(this.project.scenes.length<=1)return; this.project.scenes.splice(i,1); this.selSceneIdx=Math.min(this.selSceneIdx,this.project.scenes.length-1); this.previewIdx=Math.min(this.previewIdx,this.project.scenes.length-1); render(); },
+      addScene(val){
+        if(!val)return;
+        if(val==="story") this.project.scenes.push(sc("story","Story & Wishes","From {{senderName}}","",{body:"{{personalMessage}}"}));
+        else if(val==="qa") this.project.scenes.push(sc("qa","Interactive Q&A","","",{qaList:[qItem("What makes today special?",["You!","Our memories!"],-1,"So true!")]}));
+        else if(val==="photo_surprise") this.project.scenes.push(sc("photo_surprise","4D Photo Gallery","Special Memories","",{photoEffect:"photo_3d"}));
+        else { const f=MODES_4D.find(m=>m[0]===val); this.project.scenes.push(sc("3d_scene",f[1],val==="hug_3d"?"Sending a Warm 4D Hug!":"For {{recipientName}}","Tap below to activate 4D!",{mode3d:val,interactLabel:val==="hug_3d"?"🤗 Send Warm 4D Hug":"✨ Activate 4D Effect"})); }
+        this.selSceneIdx=this.project.scenes.length-1; this.previewIdx=this.selSceneIdx; this.previewStarted=true; render();
+      },
+      getPhotoScene(){ let i=this.project.scenes.findIndex(x=>x.type==="photo_surprise"||x.mode3d==="photo_3d"); if(i<0){this.project.scenes.push(sc("photo_surprise","Customer Photos","Precious Memories","",{photoEffect:"photo_3d"}));i=this.project.scenes.length-1;} return this.project.scenes[i]; },
+      getQAScene(){ let i=this.project.scenes.findIndex(x=>x.type==="qa"); if(i<0){this.project.scenes.push(sc("qa","Interactive Questions","","",{qaList:[qItem("What makes today special?",["You!","Our memories!"],-1,"So sweet!")]}));i=this.project.scenes.length-1;} return this.project.scenes[i]; },
+      jumpToStep(n){ this.step=n; if(n===2){this.selSceneIdx=this.project.scenes.indexOf(this.getPhotoScene());this.previewIdx=this.selSceneIdx;this.previewStarted=true;} if(n===3){this.selSceneIdx=this.project.scenes.indexOf(this.getQAScene());this.previewIdx=this.selSceneIdx;this.previewStarted=true;} if(n===5)this.generateShareLink(false); render(); },
+      replaceSlotPhoto(slotIdx,files){
+        const f=files?.[0]; if(!f)return; const r=new FileReader();
+        r.onload=ev=>{ const img=new Image(); img.onload=()=>{ const c=document.createElement("canvas"),s=Math.min(1,260/img.width); c.width=img.width*s; c.height=img.height*s; c.getContext("2d").drawImage(img,0,0,c.width,c.height); const ps=this.getPhotoScene(); ps.photos[slotIdx].url=c.toDataURL("image/jpeg",0.5); ps.photos[slotIdx].id=uid("up"); render(); }; img.src=ev.target.result; };
+        r.readAsDataURL(f);
+      },
+      uploadMultiplePhotos(files){
+        Array.from(files).forEach(f=>{ const r=new FileReader(); r.onload=ev=>{ const img=new Image(); img.onload=()=>{ const c=document.createElement("canvas"),s=Math.min(1,260/img.width); c.width=img.width*s; c.height=img.height*s; c.getContext("2d").drawImage(img,0,0,c.width,c.height); const u=c.toDataURL("image/jpeg",0.5), ps=this.getPhotoScene(), si=ps.photos.findIndex(p=>p.id.startsWith("sp")); if(si>=0)ps.photos[si]={id:uid("up"),url:u,caption:ps.photos[si].caption}; else ps.photos.push({id:uid("up"),url:u,caption:"Special Memory"}); render(); }; img.src=ev.target.result; }; r.readAsDataURL(f); });
+      },
+      addQAQuestion(){ const s=this.getQAScene(); s.qaList.push(qItem("New question for {{recipientName}}?",["Choice 1","Choice 2"],-1,"Awesome answer!")); render(); },
+      resolve(str=""){ const v=this.project.vars; return String(str).replace(/\{\{(\w+)\}\}/g,(_,k)=>v[k]??""); },
+      compiledProject(){
+        return { recipientName:this.project.vars.recipientName, senderName:this.project.vars.senderName, musicOn:this.project.musicOn, scenes:this.project.scenes.map(s=>({
+          ...s, headline:this.resolve(s.headline), subtext:this.resolve(s.subtext), body:this.resolve(s.body),
+          qaList:s.qaList?s.qaList.map(q=>({prompt:this.resolve(q.prompt),choices:q.choices.map(c=>this.resolve(c)),correctIdx:q.correctIdx,reply:this.resolve(q.reply),wrongReply:this.resolve(q.wrongReply||q.reply)})):null
+        }))};
+      },
+      setVar(k,v){ this.project.vars[k]=v; this.refreshPreviewOnly(); },
+      setSceneField(f,v){ this.project.scenes[this.selSceneIdx][f]=v; this.previewIdx=this.selSceneIdx; this.previewStarted=true; this.refreshPreviewOnly(); },
+      refreshPreviewOnly(){ const b=document.getElementById("preview-stage"); if(b){const d=this.compiledProject(); b.innerHTML=renderPlayerHTML(d,false); mount4DIfNeeded(d,false);} },
+      generateShareLink(doR=true){ this.sharedLink=(this.wishologyBaseUrl||"https://wishology01.github.io/").replace(/#.*$/,"")+encodeWishHash(this.compiledProject()); if(doR)render(); },
+      async shareWishNow(){
+        if(!this.sharedLink) this.generateShareLink(false);
+        if(navigator.share){ try{ await navigator.share({title:`Wish for ${this.project.vars.recipientName} — Wishology`,text:"✨ Open your 4D Wishology surprise in Chrome!",url:this.sharedLink}); return; }catch(e){} }
+        this.showShareModal=true; render();
+      },
+      sendWhatsApp(){ if(!this.sharedLink)this.generateShareLink(false); window.open("https://wa.me/?text="+encodeURIComponent(`✨ A special 4D Wishology surprise for ${this.project.vars.recipientName}!\nTap to open:\n${this.sharedLink}`),"_blank"); },
+      copyShareLink(){ if(!this.sharedLink)this.generateShareLink(false); navigator.clipboard.writeText(this.sharedLink).then(()=>alert("Blue link copied!")).catch(()=>prompt("Copy Link:",this.sharedLink)); },
+      openCustomerPreview(){ this.customerPreviewMode=true; this.previewIdx=0; this.previewStarted=false; this.interacted=false; this.qaIdx=0; this.qaPicked=null; this.albumIdx=0; render(); }
+    };
+
+    function mount4DIfNeeded(data, isStandalone, extState) {
+      const st = extState || { idx:app.previewIdx, started:app.previewStarted, interacted:app.interacted };
+      const s = data.scenes[st.idx] || data.scenes[0], box = document.getElementById("three-box");
+      if (!box || !st.started) return;
+      (isStandalone?standalone4D:preview4D).mount(box, s.type==="photo_surprise"?"photo_3d":(s.type==="3d_scene"?s.mode3d:"sprinkles_3d"), st.interacted, s.photos);
+    }
+
+    function renderPlayerHTML(data, isStandalone, extState) {
+      const st = extState || { idx:app.previewIdx, started:app.previewStarted, interacted:app.interacted, qaIdx:app.qaIdx, qaPicked:app.qaPicked, albumIdx:app.albumIdx };
+      const s = data.scenes[st.idx] || data.scenes[0], isLast = st.idx === data.scenes.length - 1;
+      const bg = `linear-gradient(155deg,${s.g1},${s.g2})`, txtCls = s.darkText?"text-[#5c1626]":"text-white", ctrl = isStandalone?"playerCtrl":"studioPlayer";
+
+      if (!st.started) {
+        return `<div style="background:${bg}" class="h-full flex flex-col items-center justify-center p-7 text-center ${txtCls}">
+          <div class="text-4xl mb-2">👑</div><p class="font-brand text-3xl text-pink-600 mb-1">Wishology</p>
+          <p class="text-xs uppercase tracking-widest opacity-80 mb-2">A 4D Special Wish For</p>
+          <h2 class="text-4xl font-bold mb-7">${esc(data.recipientName)}</h2>
+          <button onclick="${ctrl}.start()" class="px-7 py-3.5 rounded-full bg-gradient-to-r from-pink-500 to-rose-500 text-white font-bold shadow-xl hover:scale-105 transition">Tap to Open 4D Wish ✨</button>
+          <p class="text-xs mt-5 opacity-75">Sent with love by ${esc(data.senderName)}</p>
+        </div>`;
+      }
+
+      let center = "";
+      if (s.type==="3d_scene") {
+        center = `<div class="space-y-2"><div id="three-box" class="w-full h-64 rounded-2xl overflow-hidden bg-black/5 border border-white/30"></div>
+          <h3 class="text-xl font-bold">${esc(s.headline)}</h3>${s.subtext?`<p class="text-xs opacity-80">${esc(s.subtext)}</p>`:""}
+          ${s.interactLabel?`<button id="act-btn" onclick="${ctrl}.interact()" class="${st.interacted?'hidden':''} mt-1 px-6 py-2.5 rounded-full bg-gradient-to-r from-pink-500 to-rose-500 text-white text-xs font-bold shadow-lg">${esc(s.interactLabel)}</button>`:""}
+          <p id="act-msg" class="${st.interacted?'':'hidden'} text-xs font-bold text-emerald-700 bg-emerald-100 inline-block px-3 py-1 rounded-full">✨ 4D Magic Activated!</p></div>`;
+      } else if (s.type==="photo_surprise") {
+        const ef=s.photoEffect, photos=s.photos||[];
+        if (ef==="photo_3d") center=`<div class="space-y-2"><h3 class="text-lg font-bold">${esc(s.headline)}</h3><div id="three-box" class="w-full h-64 rounded-2xl overflow-hidden bg-black/5 border border-white/30"></div><p class="text-[11px] opacity-75">Drag to rotate your 4D Photo Carousel</p></div>`;
+        else if (ef==="opening_photo_album" && photos.length) {
+          const p=photos[st.albumIdx%photos.length];
+          center=`<div class="bg-white/95 text-[#5c1626] p-3 rounded-2xl shadow-xl border-2 border-pink-200 max-w-xs mx-auto"><img src="${p.url}" class="w-full h-44 object-cover rounded-xl"/><p class="mt-2 text-sm font-semibold">${esc(p.caption)}</p><div class="flex justify-between items-center mt-3"><button onclick="${ctrl}.album(-1)" class="px-3 py-1 rounded-full bg-pink-100 text-xs font-bold">◀ Prev</button><span class="text-xs font-bold">${(st.albumIdx%photos.length)+1}/${photos.length}</span><button onclick="${ctrl}.album(1)" class="px-3 py-1 rounded-full bg-pink-500 text-white text-xs font-bold">Next ▶</button></div></div>`;
+        } else if (ef==="memory_timeline") {
+          center=`<div class="border-l-2 border-pink-400 pl-3 space-y-2 text-left max-h-64 overflow-y-auto">${photos.map((p,i)=>`<div class="flex gap-2 items-center bg-white/85 text-[#5c1626] p-2 rounded-xl"><img src="${p.url}" class="w-12 h-12 rounded-lg object-cover"/><div><div class="text-[10px] font-bold text-pink-600">Chapter ${i+1}</div><div class="text-xs font-semibold">${esc(p.caption)}</div></div></div>`).join("")}</div>`;
+        } else if (ef==="heart_shaped_reveal") {
+          center=`<div class="grid grid-cols-3 gap-1.5 p-3 rounded-3xl bg-pink-500/20 border-2 border-pink-300 max-w-xs mx-auto">${photos.map(p=>`<img src="${p.url}" class="w-full h-20 object-cover rounded-2xl"/>`).join("")}</div><p class="text-xs mt-2 font-bold">❤️ Heart Memory Mosaic ❤️</p>`;
+        } else {
+          center=`<div class="grid grid-cols-2 gap-2 max-h-64 overflow-y-auto">${photos.map((p,i)=>`<div class="bg-white text-[#5c1626] p-1.5 pb-2.5 rounded-xl shadow" style="transform:rotate(${ef==='polaroid_reveal'?(i%2?2.5:-2.5):0}deg)"><img src="${p.url}" class="w-full h-24 object-cover rounded-lg"/><p class="text-[11px] mt-1 font-semibold truncate">${esc(p.caption)}</p></div>`).join("")}</div>`;
+        }
+      } else if (s.type==="qa" && s.qaList?.length) {
+        const qi=Math.min(st.qaIdx||0,s.qaList.length-1), q=s.qaList[qi], ok=q.correctIdx<0||st.qaPicked===q.correctIdx, fb=st.qaPicked!==null?(ok?q.reply:(q.wrongReply||q.reply)):"";
+        center=`<div class="bg-white/95 text-[#5c1626] p-4 rounded-2xl shadow-xl border border-pink-200 text-left space-y-2.5 max-w-xs mx-auto">
+          <span class="px-2.5 py-0.5 rounded-full bg-pink-100 text-pink-700 text-[10px] font-bold uppercase">Question ${qi+1} of ${s.qaList.length}</span>
+          <h3 class="text-base font-bold">${esc(q.prompt)}</h3>
+          ${q.choices.map((c,i)=>`<button onclick="${ctrl}.pickQa(${i})" class="w-full text-left px-3.5 py-2 rounded-xl text-xs font-semibold ${st.qaPicked===i?'bg-pink-500 text-white shadow':'bg-pink-50 hover:bg-pink-100'}">${esc(c)}</button>`).join("")}
+          ${st.qaPicked!==null?`<div class="p-2.5 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-900 text-xs font-bold space-y-2"><p>✨ ${esc(fb)}</p>${qi<s.qaList.length-1?`<button onclick="${ctrl}.nextQa()" class="w-full py-1.5 rounded-full bg-pink-500 text-white text-xs font-bold">Next Question (${qi+2}/${s.qaList.length}) →</button>`:`<p class="text-[11px] text-pink-700">🎉 All Questions Complete!</p>`}</div>`:""}
+        </div>`;
+      } else {
+        center=`<div class="space-y-3 max-w-xs mx-auto"><div id="three-box" class="w-full h-24 rounded-2xl overflow-hidden"></div>
+          <h3 class="text-2xl font-bold">${esc(s.headline)}</h3>
+          ${s.body?`<p class="text-sm leading-relaxed whitespace-pre-line bg-white/80 text-[#5c1626] p-4 rounded-2xl border border-pink-200 shadow">${esc(s.body)}</p>`:""}
+          ${s.subtext?`<p class="text-xs font-bold opacity-80">${esc(s.subtext)}</p>`:""}</div>`;
+      }
+
+      return `<div style="background:${bg}" class="h-full flex flex-col justify-between p-4 text-center ${txtCls}">
+        <div class="flex gap-1">${data.scenes.map((_,i)=>`<button onclick="${ctrl}.go(${i})" class="h-1.5 flex-1 rounded-full ${i<=st.idx?'bg-pink-500':'bg-pink-300/50'}"></button>`).join("")}</div>
+        <div class="my-auto py-2">${center}</div>
+        <div class="flex justify-between items-center gap-2">
+          <button onclick="${ctrl}.go(Math.max(0,${st.idx}-1))" class="px-3.5 py-1.5 rounded-full bg-white/80 text-[#5c1626] text-xs font-bold">← Back</button>
+          <span class="text-[11px] font-bold opacity-75">${st.idx+1} of ${data.scenes.length}</span>
+          ${isLast?`<button onclick="${ctrl}.replay()" class="px-4 py-1.5 rounded-full bg-gradient-to-r from-amber-400 to-pink-500 text-white text-xs font-bold shadow">🔄 Replay Wish</button>`:`<button onclick="${ctrl}.go(${st.idx}+1)" class="px-4 py-1.5 rounded-full bg-pink-500 text-white text-xs font-bold shadow">Next →</button>`}
+        </div>
+      </div>`;
+    }
+
+    window.studioPlayer = {
+      start(){ app.previewStarted=true; fx4D.chime(); if(app.project.musicOn)fx4D.playMusic(); app.customerPreviewMode?render():app.refreshPreviewOnly(); },
+      replay(){ app.previewIdx=0; app.previewStarted=true; app.interacted=false; app.qaIdx=0; app.qaPicked=null; app.albumIdx=0; fx4D.chime(); if(app.project.musicOn)fx4D.playMusic(); app.customerPreviewMode?render():app.refreshPreviewOnly(); },
+      go(i){ app.previewIdx=i; app.interacted=false; app.qaIdx=0; app.qaPicked=null; app.albumIdx=0; app.customerPreviewMode?render():app.refreshPreviewOnly(); },
+      interact(){ app.interacted=true; fx4D.chime(); preview4D.trigger(); const b=document.getElementById("act-btn");if(b)b.style.display="none"; const m=document.getElementById("act-msg");if(m)m.classList.remove("hidden"); },
+      pickQa(i){ app.qaPicked=i; fx4D.chime(); app.customerPreviewMode?render():app.refreshPreviewOnly(); },
+      nextQa(){ app.qaIdx++; app.qaPicked=null; app.customerPreviewMode?render():app.refreshPreviewOnly(); },
+      album(d){ app.albumIdx=Math.max(0,app.albumIdx+d); app.customerPreviewMode?render():app.refreshPreviewOnly(); }
+    };
+
+    function render() {
+      const root = document.getElementById("app");
+
+      if (SHARED_MODE_DATA) {
+        if (!window._sh) {
+          window._sh = { idx:0, started:false, interacted:false, qaIdx:0, qaPicked:null, albumIdx:0 };
+          window.playerCtrl = {
+            start(){ window._sh.started=true; fx4D.chime(); if(SHARED_MODE_DATA.musicOn)fx4D.playMusic(); renderSh(); },
+            replay(){ window._sh={idx:0,started:true,interacted:false,qaIdx:0,qaPicked:null,albumIdx:0}; fx4D.chime(); if(SHARED_MODE_DATA.musicOn)fx4D.playMusic(); renderSh(); },
+            go(i){ window._sh.idx=i; window._sh.interacted=false; window._sh.qaIdx=0; window._sh.qaPicked=null; window._sh.albumIdx=0; renderSh(); },
+            interact(){ window._sh.interacted=true; fx4D.chime(); standalone4D.trigger(); const b=document.getElementById("act-btn");if(b)b.style.display="none"; const m=document.getElementById("act-msg");if(m)m.classList.remove("hidden"); },
+            pickQa(i){ window._sh.qaPicked=i; fx4D.chime(); renderSh(); },
+            nextQa(){ window._sh.qaIdx++; window._sh.qaPicked=null; renderSh(); },
+            album(d){ window._sh.albumIdx=Math.max(0,window._sh.albumIdx+d); renderSh(); }
+          };
+        }
+        window.renderSh = () => {
+          root.innerHTML = `<div class="min-h-screen flex flex-col items-center justify-center p-4"><div class="w-full max-w-md h-[650px] rounded-3xl overflow-hidden shadow-2xl border-4 border-pink-200">${renderPlayerHTML(SHARED_MODE_DATA,true,window._sh)}</div><p class="mt-3 text-xs text-pink-700 font-semibold">Made with 💖 by Wishology</p></div>`;
+          mount4DIfNeeded(SHARED_MODE_DATA, true, window._sh);
+        };
+        renderSh(); return;
+      }
+
+      if (app.project && app.customerPreviewMode) {
+        const d = app.compiledProject();
+        root.innerHTML = `<div class="min-h-screen flex flex-col items-center justify-center p-4"><div class="mb-3 flex items-center gap-3"><button onclick="app.customerPreviewMode=false;fx4D.stopMusic();render()" class="px-4 py-1.5 rounded-full bg-white border border-pink-300 text-xs font-bold shadow">← Back to Editor</button><span class="text-xs font-bold">Customer 4D Preview</span></div><div class="w-full max-w-md h-[650px] rounded-3xl overflow-hidden shadow-2xl border-4 border-pink-200">${renderPlayerHTML(d,false)}</div></div>`;
+        mount4DIfNeeded(d, false); return;
+      }
+
+      if (!app.project) {
+        fx4D.stopMusic();
+        const list = app.templates.filter(t=>!t.archived&&t.cat===app.activeCat);
+        root.innerHTML = `<div class="max-w-6xl mx-auto px-4 py-6">
+          <div class="text-center mb-5"><div class="wish-card rounded-3xl p-6 max-w-2xl mx-auto">
+            <div class="text-4xl mb-1">👑</div><h1 class="font-brand text-5xl text-[#681729]">Wishology</h1>
+            <span class="inline-block mt-2 px-5 py-1 rounded-full bg-pink-200/70 text-[#5c1626] text-xs font-bold tracking-widest uppercase">♥ 4D Creative Studio &amp; Services ♥</span>
+            <p class="text-sm text-[#7a2338] mt-3">4D Animations, Sound FX, 3D Hug, Cake Cutting, Gift Box, Easy Photos, Story &amp; 3 Customizable Q&amp;As.</p>
+          </div></div>
+          <div class="flex flex-wrap justify-center items-center gap-2 mb-6">
+            ${app.categories.map(c=>`<button onclick="app.activeCat='${c.id}';render()" class="px-4 py-2 rounded-full text-sm font-bold border ${app.activeCat===c.id?'bg-gradient-to-r from-pink-500 to-rose-500 text-white border-pink-500 shadow':'bg-[#fff2f6] text-[#5c1626] border-pink-300'}">${c.icon} ${esc(c.name)}</button>`).join("")}
+            <button onclick="app.addCategory()" class="px-3.5 py-2 rounded-full text-xs font-bold bg-amber-100 text-amber-900 border border-amber-300">+ New Category</button>
+          </div>
+          <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5 mb-8">
+            ${list.map(t=>`<div class="wish-card rounded-3xl p-5 flex flex-col justify-between">
+              <div><span class="inline-block px-2.5 py-0.5 rounded-full bg-pink-200/70 text-[11px] font-bold">✨ 4D + 3 Q&amp;A + Photos</span><h3 class="text-lg font-bold mt-2">${esc(t.title)}</h3><p class="text-xs text-[#7a2338] mt-1.5">${esc(t.desc)}</p></div>
+              <button onclick="app.personalize('${t.id}')" class="mt-5 w-full py-2.5 rounded-full bg-gradient-to-r from-pink-500 to-rose-500 text-white font-bold text-sm shadow">✨ Customize 4D Wish</button>
+            </div>`).join("")}
+          </div>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4 max-w-2xl mx-auto text-center">
+            <div class="wish-card rounded-2xl p-4"><p class="font-bold">💬 +92 3226818159</p><p class="text-xs text-[#7a2338]">Order &amp; details on WhatsApp</p></div>
+            <div class="wish-card rounded-2xl p-4"><p class="font-bold">🌐 Wishology Customer Portal</p><p class="text-xs text-[#7a2338]">Personalized 4D moments with Replay</p></div>
+          </div>
+        </div>`; return;
+      }
+
+      const p=app.project, s=p.scenes[app.selSceneIdx]||p.scenes[0], data=app.compiledProject(), ps=app.getPhotoScene(), qs=app.getQAScene();
+      root.innerHTML = `<div class="min-h-screen flex flex-col">
+        <header class="bg-[#fff2f6] border-b border-pink-300 px-4 py-3 flex flex-wrap justify-between items-center gap-2">
+          <div class="flex items-center gap-3"><button onclick="app.project=null;render()" class="px-3.5 py-1.5 rounded-full bg-pink-100 text-xs font-bold">← Designs</button><span class="font-brand text-2xl text-[#681729]">Wishology 4D</span></div>
+          <div class="flex gap-2"><button onclick="app.saveAsNewTemplate()" class="px-3.5 py-1.5 rounded-full bg-amber-100 border border-amber-300 text-xs font-bold">⭐ Save Template</button><button onclick="app.jumpToStep(5)" class="px-4 py-1.5 rounded-full bg-gradient-to-r from-pink-500 to-rose-500 text-white text-xs font-bold shadow">📤 Share Link</button></div>
+        </header>
+        <div class="flex-1 max-w-6xl w-full mx-auto grid grid-cols-1 lg:grid-cols-12 gap-6 p-4 md:p-6">
+          <div class="lg:col-span-7 wish-card rounded-3xl p-5 flex flex-col">
+            <div class="grid grid-cols-5 gap-1.5 mb-5">${[[1,"1. Names"],[2,"2. Photos"],[3,"3. Questions"],[4,"4. 4D Scenes"],[5,"5. Share"]].map(([n,l])=>`<button onclick="app.jumpToStep(${n})" class="py-2 px-1 rounded-2xl text-[11px] font-bold border ${app.step===n?'bg-gradient-to-r from-pink-500 to-rose-500 text-white border-pink-500':'bg-white text-[#5c1626] border-pink-200'}">${l}</button>`).join("")}</div>
+
+            ${app.step===1?`<div class="space-y-4"><h2 class="text-lg font-bold">Step 1: Names &amp; Personal Story</h2>
+              <input placeholder="Recipient Name" value="${esc(p.vars.recipientName)}" oninput="app.setVar('recipientName',this.value)" class="w-full p-3 rounded-2xl bg-white border border-pink-300 text-sm font-semibold"/>
+              <input placeholder="Sender Name" value="${esc(p.vars.senderName)}" oninput="app.setVar('senderName',this.value)" class="w-full p-3 rounded-2xl bg-white border border-pink-300 text-sm font-semibold"/>
+              <textarea rows="4" oninput="app.setVar('personalMessage',this.value)" class="w-full p-3 rounded-2xl bg-white border border-pink-300 text-sm">${esc(p.vars.personalMessage)}</textarea>
+              <button onclick="app.jumpToStep(2)" class="px-6 py-2.5 rounded-full bg-pink-500 text-white text-sm font-bold">Next: Photos →</button></div>`:""}
+
+            ${app.step===2?`<div class="space-y-4"><h2 class="text-lg font-bold">Step 2: Put Customer Photos</h2>
+              <div class="p-3 rounded-2xl bg-white border border-dashed border-pink-400 text-center"><label class="cursor-pointer inline-block px-5 py-2.5 rounded-full bg-gradient-to-r from-pink-500 to-rose-500 text-white text-xs font-bold shadow">📷 Select Customer Photos<input type="file" multiple accept="image/*" onchange="app.uploadMultiplePhotos(this.files)" class="hidden"/></label></div>
+              <div class="space-y-2 max-h-52 overflow-y-auto">${ps.photos.map((ph,i)=>`<div class="flex items-center gap-2.5 bg-white p-2 rounded-2xl border border-pink-200"><img src="${ph.url}" class="w-14 h-14 rounded-xl object-cover shrink-0"/><div class="flex-1 space-y-1"><input value="${esc(ph.caption)}" oninput="app.getPhotoScene().photos[${i}].caption=this.value;app.refreshPreviewOnly()" class="w-full text-xs p-1.5 rounded-lg border border-pink-200"/><div class="flex gap-2"><label class="cursor-pointer px-2.5 py-1 rounded-full bg-pink-100 text-[11px] font-bold">Replace<input type="file" accept="image/*" onchange="app.replaceSlotPhoto(${i},this.files)" class="hidden"/></label><button onclick="app.getPhotoScene().photos.splice(${i},1);render()" class="px-2.5 py-1 rounded-full bg-rose-100 text-rose-700 text-[11px] font-bold">Delete</button></div></div></div>`).join("")}</div>
+              <div class="flex flex-wrap gap-2"><select onchange="app.getPhotoScene().photoEffect=this.value;app.refreshPreviewOnly()" class="flex-1 p-2.5 rounded-2xl bg-white border border-pink-300 text-xs font-bold">${[["photo_3d","🖼️ 4D Photo Carousel"],["polaroid_reveal","📸 Polaroid"],["opening_photo_album","📖 Photo Album"],["gift_box_photos","🎁 Gift Box Photos"],["floating_photo_frames","✨ Floating Frames"],["memory_timeline","⏳ Timeline"],["heart_shaped_reveal","❤️ Heart Mosaic"]].map(([v,l])=>`<option value="${v}" ${ps.photoEffect===v?"selected":""}>${l}</option>`).join("")}</select><button onclick="app.jumpToStep(3)" class="px-5 py-2.5 rounded-full bg-pink-500 text-white text-xs font-bold">Next: Questions →</button></div></div>`:""}
+
+            ${app.step===3?`<div class="space-y-3"><div class="flex justify-between items-center"><h2 class="text-lg font-bold">Step 3: Questions (${qs.qaList.length})</h2><button onclick="app.addQAQuestion()" class="px-3 py-1.5 rounded-full bg-emerald-500 text-white text-xs font-bold">+ Add Question</button></div>
+              <div class="space-y-3 max-h-[380px] overflow-y-auto">${qs.qaList.map((q,qi)=>`<div class="bg-white p-3.5 rounded-2xl border border-pink-300 space-y-2"><div class="flex justify-between"><span class="text-xs font-bold text-pink-600">Question ${qi+1}</span>${qs.qaList.length>1?`<button onclick="app.getQAScene().qaList.splice(${qi},1);render()" class="text-xs text-rose-600 font-bold">Delete</button>`:""}</div>
+                <input value="${esc(q.prompt)}" oninput="app.getQAScene().qaList[${qi}].prompt=this.value;app.refreshPreviewOnly()" class="w-full p-2 rounded-xl border border-pink-200 text-xs font-semibold"/>
+                ${q.choices.map((ch,ci)=>`<div class="flex gap-1.5"><input value="${esc(ch)}" oninput="app.getQAScene().qaList[${qi}].choices[${ci}]=this.value;app.refreshPreviewOnly()" class="flex-1 p-1.5 rounded-lg border border-pink-200 text-xs"/>${q.choices.length>2?`<button onclick="app.getQAScene().qaList[${qi}].choices.splice(${ci},1);render()" class="px-2 bg-rose-100 rounded-lg text-xs">✕</button>`:""}</div>`).join("")}
+                <button onclick="app.getQAScene().qaList[${qi}].choices.push('New Choice');render()" class="text-[11px] font-bold text-pink-600">+ Add Choice</button>
+                <div class="grid grid-cols-2 gap-2"><select onchange="app.getQAScene().qaList[${qi}].correctIdx=Number(this.value);app.refreshPreviewOnly()" class="p-1.5 rounded-lg border border-pink-200 text-[11px]"><option value="-1" ${q.correctIdx<0?'selected':''}>Any answer correct</option>${q.choices.map((_,ci)=>`<option value="${ci}" ${q.correctIdx===ci?'selected':''}>Correct: #${ci+1}</option>`).join("")}</select><input value="${esc(q.reply)}" oninput="app.getQAScene().qaList[${qi}].reply=this.value;app.refreshPreviewOnly()" class="p-1.5 rounded-lg border border-pink-200 text-[11px]"/></div></div>`).join("")}</div>
+              <div class="flex justify-end"><button onclick="app.jumpToStep(4)" class="px-6 py-2 rounded-full bg-pink-500 text-white text-xs font-bold">Next: 4D Scenes →</button></div></div>`:""}
+
+            ${app.step===4?`<div class="space-y-3"><div class="flex justify-between items-center"><h2 class="text-lg font-bold">Step 4: 4D Scenes</h2><button onclick="app.addScene('hug_3d')" class="px-3 py-1.5 rounded-full bg-pink-500 text-white text-xs font-bold">+ Add 4D Hug 🤗</button></div>
+              <div class="space-y-1.5 max-h-36 overflow-y-auto">${p.scenes.map((scn,i)=>`<div onclick="app.selSceneIdx=${i};app.previewIdx=${i};app.previewStarted=true;render()" class="flex justify-between items-center p-2 rounded-xl border cursor-pointer ${i===app.selSceneIdx?'bg-pink-100 border-pink-500':'bg-white border-pink-200'}"><span class="text-xs font-bold">${i+1}. ${esc(scn.title)}</span><div class="flex gap-1"><button onclick="event.stopPropagation();app.moveScene(${i},-1)" class="px-2 bg-pink-200 rounded text-[11px]">↑</button><button onclick="event.stopPropagation();app.moveScene(${i},1)" class="px-2 bg-pink-200 rounded text-[11px]">↓</button><button onclick="event.stopPropagation();app.removeScene(${i})" class="px-2 bg-rose-200 rounded text-[11px]">✕</button></div></div>`).join("")}</div>
+              <select onchange="app.addScene(this.value);this.value=''" class="w-full p-2 rounded-xl bg-white border border-pink-300 text-xs font-bold"><option value="">+ Add Any 4D Scene / Story / Q&amp;A...</option>${MODES_4D.map(([v,l])=>`<option value="${v}">${l}</option>`).join("")}<option value="story">📝 Story &amp; Wishes</option><option value="qa">❓ Interactive Q&amp;A</option></select>
+              <div class="bg-white p-3 rounded-2xl border border-pink-200 space-y-2">${s.type==="3d_scene"?`<select onchange="app.setSceneField('mode3d',this.value)" class="w-full p-2 rounded-xl border border-pink-200 text-xs font-bold">${MODES_4D.map(([v,l])=>`<option value="${v}" ${s.mode3d===v?"selected":""}>${l}</option>`).join("")}</select>`:""}<input placeholder="Scene Headline" value="${esc(s.headline)}" oninput="app.setSceneField('headline',this.value)" class="w-full p-2 rounded-xl border border-pink-200 text-xs"/></div>
+              <button onclick="app.jumpToStep(5)" class="w-full py-2.5 rounded-full bg-gradient-to-r from-pink-500 to-rose-500 text-white text-sm font-bold">Finish &amp; Share Wish →</button></div>`:""}
+
+            ${app.step===5?`<div class="space-y-3"><h2 class="text-xl font-bold text-center">🎉 Ready to Share With ${esc(p.vars.recipientName)}!</h2>
+              <div class="bg-white p-4 rounded-2xl border-2 border-pink-300 space-y-2.5">
+                <label class="block text-xs font-bold">Your Wishology Website URL:</label>
+                <input value="${esc(app.wishologyBaseUrl)}" oninput="app.setWishologyUrl(this.value)" class="w-full p-2 rounded-xl bg-pink-50 border border-pink-200 text-xs font-semibold"/>
+                <label class="block text-xs font-bold">Customer Shareable Blue Link:</label>
+                <input id="share-link-input" readonly value="${esc(app.sharedLink)}" class="w-full p-2 rounded-xl bg-slate-50 border border-pink-200 text-[11px]"/>
+                <div class="grid grid-cols-2 gap-2"><button onclick="app.shareWishNow()" class="py-3 rounded-full bg-gradient-to-r from-emerald-500 to-green-600 text-white text-xs font-bold shadow-lg">📤 Share Link (WhatsApp)</button><button onclick="app.copyShareLink()" class="py-3 rounded-full bg-gradient-to-r from-pink-500 to-rose-500 text-white text-xs font-bold shadow">📋 Copy Blue Link</button></div>
+                <button onclick="app.openCustomerPreview()" class="w-full py-2 rounded-full bg-pink-100 text-[#5c1626] text-xs font-bold">👀 Fullscreen Preview (With Replay)</button>
+              </div></div>`:""}
+          </div>
+
+          <div class="lg:col-span-5 flex flex-col items-center">
+            <p class="text-xs font-bold uppercase text-[#7a2338] mb-2">📱 Live 4D Customer Preview</p>
+            <div id="preview-stage" class="w-[330px] h-[590px] rounded-[2.2rem] overflow-hidden border-[6px] border-[#681729] shadow-2xl bg-white">${renderPlayerHTML(data,false)}</div>
+          </div>
+        </div>
+
+        ${app.showShareModal?`<div class="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50"><div class="wish-card rounded-3xl p-6 max-w-sm w-full text-center space-y-3">
+          <h3 class="text-lg font-bold">Send Wishology Link</h3>
+          <button onclick="app.sendWhatsApp();app.showShareModal=false;render()" class="w-full py-3 rounded-full bg-emerald-600 text-white font-bold text-sm shadow">💬 Send via WhatsApp / Business</button>
+          <button onclick="app.copyShareLink();app.showShareModal=false;render()" class="w-full py-2.5 rounded-full bg-pink-500 text-white font-bold text-sm shadow">📋 Copy Blue Link</button>
+          <button onclick="app.showShareModal=false;render()" class="text-xs font-bold text-pink-700">Cancel</button>
+        </div></div>`:""}
+      </div>`;
+      mount4DIfNeeded(data, false);
+    }
+    render();
+  </script>
+</body>
+</html>
